@@ -1,0 +1,19 @@
+{
+  "name": "rankpilot-local",
+  "version": "1.0.0",
+  "description": "RankPilot Local - multi-tenant SaaS for Google Business Profile automation, local SEO, geo-grid rank tracking, citation building and lead (call/text/WhatsApp) tracking on a credit-based model.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "dev": "node --no-warnings --watch src/server.js",
+    "seed": "node --no-warnings src/seed.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "express": "^5.1.0",
+    "stripe": "^23.1.0"
+  }
+}

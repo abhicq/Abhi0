@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RankPilot Local</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="auth" class="auth hidden">
+    <div class="auth-card">
+      <div class="brand big"><span class="logo">◎</span> RankPilot <em>Local</em></div>
+      <p class="muted">Rank your Google Business Profile in the 3-pack on autopilot — and turn it into calls, texts & WhatsApp leads.</p>
+      <form id="authForm">
+        <input name="name" placeholder="Your name" class="signup-only" />
+        <input name="company" placeholder="Business / agency name" class="signup-only" />
+        <input name="email" type="email" placeholder="Email" required />
+        <input name="password" type="password" placeholder="Password (8+ chars)" required minlength="8" />
+        <button class="btn primary wide" type="submit" id="authSubmit">Start free trial</button>
+      </form>
+      <p class="muted small"><a href="#" id="authToggle">Already have an account? Log in</a></p>
+      <p class="muted small">Demo login: <code>demo@rankpilot.local</code> / <code>demo12345</code> (after <code>npm run seed</code>)</p>
+    </div>
+  </div>
+
+  <div id="app" class="layout hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo">◎</span> RankPilot <em>Local</em></div>
+      <nav id="nav"></nav>
+      <div class="credits-box">
+        <div class="muted small">Credits</div>
+        <div id="creditBalance" class="credits">—</div>
+        <div id="planName" class="muted small"></div>
+        <a href="#billing" class="btn small wide">Top up / Upgrade</a>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <select id="locSelect"></select>
+        <div class="spacer"></div>
+        <span id="modeBadges"></span>
+        <button class="btn ghost small" id="logout">Log out</button>
+      </header>
+      <section id="view"></section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
