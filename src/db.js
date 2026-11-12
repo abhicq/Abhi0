@@ -1,10 +1,15 @@
-import { DatabaseSync } from 'node:sqlite';
+// Database: libSQL (SQLite-compatible).
+//  - Production / Vercel: Turso (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN)
+//  - Local dev:           file:./data/rankpilot.db
+//  - Vercel without Turso: file:/tmp (ephemeral demo, auto-seeded)
+import { createClient } from '@libsql/client';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config.js';
 
-let db;
+let client;
+let ready;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS tenants (
@@ -215,29 +220,35 @@ CREATE INDEX IF NOT EXISTS idx_leads_loc ON lead_events(location_id, created_at)
 CREATE INDEX IF NOT EXISTS idx_scans_loc ON grid_scans(location_id, keyword, created_at);
 `;
 
-export function getDb() {
-  if (db) return db;
-  if (config.dbPath !== ':memory:') fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
-  db = new DatabaseSync(config.dbPath);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  db.exec(SCHEMA);
-  return db;
+export function initDb() {
+  if (!ready) {
+    ready = (async () => {
+      const url = config.db.url;
+      if (url.startsWith('file:') && !url.includes(':memory:')) fs.mkdirSync(path.dirname(url.slice(5)), { recursive: true });
+      client = createClient({ url, authToken: config.db.authToken || undefined });
+      await client.executeMultiple(SCHEMA);
+    })().catch((e) => { ready = null; throw e; });
+  }
+  return ready;
 }
 
 export const id = (prefix = '') => prefix + crypto.randomUUID().replace(/-/g, '').slice(0, 20);
 
-export const q = {
-  get: (sql, ...p) => getDb().prepare(sql).get(...p),
-  all: (sql, ...p) => getDb().prepare(sql).all(...p),
-  run: (sql, ...p) => getDb().prepare(sql).run(...p),
-};
+const clean = (args) => args.map((a) => (a === undefined ? null : typeof a === 'boolean' ? (a ? 1 : 0) : a));
+const toObj = (cols, row) => Object.fromEntries(cols.map((c, i) => [c, row[i]]));
 
-export function tx(fn) {
-  const d = getDb();
-  d.exec('BEGIN IMMEDIATE');
-  try { const r = fn(); d.exec('COMMIT'); return r; }
-  catch (e) { d.exec('ROLLBACK'); throw e; }
+async function exec(sql, args) {
+  await initDb();
+  return client.execute({ sql, args: clean(args) });
 }
+
+export const q = {
+  get: async (sql, ...p) => { const r = await exec(sql, p); return r.rows[0] ? toObj(r.columns, r.rows[0]) : undefined; },
+  all: async (sql, ...p) => { const r = await exec(sql, p); return r.rows.map((row) => toObj(r.columns, row)); },
+  run: async (sql, ...p) => { const r = await exec(sql, p); return { changes: r.rowsAffected }; },
+  /** Run several statements atomically: [[sql, ...args], ...] */
+  batch: async (stmts) => { await initDb(); return client.batch(stmts.map(([sql, ...a]) => ({ sql, args: clean(a) })), 'write'); },
+};
 
 const JSON_COLS = ['secondary_categories', 'service_areas', 'services', 'hours', 'attributes', 'autopilot', 'points', 'competitors', 'report', 'meta'];
 export function hydrate(row) {
@@ -248,5 +259,16 @@ export function hydrate(row) {
 }
 
 export function logActivity(tenantId, locationId, kind, message) {
-  q.run('INSERT INTO activity_log (id, tenant_id, location_id, kind, message) VALUES (?,?,?,?,?)', id('act_'), tenantId, locationId || null, kind, message);
+  return q.run('INSERT INTO activity_log (id, tenant_id, location_id, kind, message) VALUES (?,?,?,?,?)', id('act_'), tenantId, locationId || null, kind, message);
+}
+
+/** Child tables are deleted explicitly (FK cascades are not guaranteed over remote libSQL connections). */
+const LOCATION_CHILDREN = ['keywords', 'posts', 'reviews', 'audits', 'grid_scans', 'citations', 'tracking_links', 'lead_events', 'gbp_metrics'];
+export function deleteLocation(locationId) {
+  return q.batch([...LOCATION_CHILDREN.map((t) => [`DELETE FROM ${t} WHERE location_id = ?`, locationId]), ['DELETE FROM locations WHERE id = ?', locationId]]);
+}
+export async function deleteTenant(tenantId) {
+  const locs = await q.all('SELECT id FROM locations WHERE tenant_id = ?', tenantId);
+  for (const l of locs) await deleteLocation(l.id);
+  await q.batch(['credit_ledger', 'activity_log', 'google_connections', 'users'].map((t) => [`DELETE FROM ${t} WHERE tenant_id = ?`, tenantId]).concat([['DELETE FROM tenants WHERE id = ?', tenantId]]));
 }

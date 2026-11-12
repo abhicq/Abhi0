@@ -1,4 +1,4 @@
-import { q, id, tx } from './db.js';
+import { q, id } from './db.js';
 import { CREDIT_ACTIONS } from './pricing.js';
 
 export class InsufficientCreditsError extends Error {
@@ -8,8 +8,8 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
-export function balance(tenantId) {
-  return q.get('SELECT credits_balance FROM tenants WHERE id = ?', tenantId)?.credits_balance ?? 0;
+export async function balance(tenantId) {
+  return (await q.get('SELECT credits_balance FROM tenants WHERE id = ?', tenantId))?.credits_balance ?? 0;
 }
 
 export function quote(action, qty = 1) {
@@ -18,41 +18,37 @@ export function quote(action, qty = 1) {
   return { credits: a.credits * qty, vendorCostUsd: a.vendorCostUsd * qty };
 }
 
-/** Atomically debit credits for an action. Throws InsufficientCreditsError. */
-export function charge(tenantId, action, { qty = 1, locationId = null, refId = null, note = null } = {}) {
+/**
+ * Debit credits for an action. The conditional UPDATE ... RETURNING is atomic,
+ * so concurrent serverless invocations can never overdraw a balance.
+ */
+export async function charge(tenantId, action, { qty = 1, locationId = null, refId = null, note = null } = {}) {
   const { credits, vendorCostUsd } = quote(action, qty);
-  if (credits === 0) return { credits: 0, balance: balance(tenantId) };
-  return tx(() => {
-    const t = q.get('SELECT credits_balance FROM tenants WHERE id = ?', tenantId);
-    if (!t || t.credits_balance < credits) throw new InsufficientCreditsError(credits, t?.credits_balance ?? 0);
-    const after = t.credits_balance - credits;
-    q.run('UPDATE tenants SET credits_balance = ? WHERE id = ?', after, tenantId);
-    q.run(`INSERT INTO credit_ledger (id, tenant_id, delta, balance_after, action, location_id, ref_id, vendor_cost_usd, note)
-           VALUES (?,?,?,?,?,?,?,?,?)`, id('led_'), tenantId, -credits, after, action, locationId, refId, vendorCostUsd, note);
-    return { credits, balance: after };
-  });
+  if (credits === 0) return { credits: 0, balance: await balance(tenantId) };
+  const row = await q.get('UPDATE tenants SET credits_balance = credits_balance - ? WHERE id = ? AND credits_balance >= ? RETURNING credits_balance', credits, tenantId, credits);
+  if (!row) throw new InsufficientCreditsError(credits, await balance(tenantId));
+  await q.run(`INSERT INTO credit_ledger (id, tenant_id, delta, balance_after, action, location_id, ref_id, vendor_cost_usd, note)
+               VALUES (?,?,?,?,?,?,?,?,?)`, id('led_'), tenantId, -credits, row.credits_balance, action, locationId, refId, vendorCostUsd, note);
+  return { credits, balance: row.credits_balance };
 }
 
 /** Refund a previous charge (e.g. external API failed after debit). */
-export function refund(tenantId, action, credits, { locationId = null, refId = null, note = 'refund' } = {}) {
+export async function refund(tenantId, action, credits, { locationId = null, refId = null, note = 'refund' } = {}) {
   if (!credits) return;
-  grant(tenantId, credits, `refund:${action}`, { locationId, refId, note });
+  await grant(tenantId, credits, `refund:${action}`, { locationId, refId, note });
 }
 
-export function grant(tenantId, credits, action, { locationId = null, refId = null, note = null } = {}) {
-  return tx(() => {
-    const t = q.get('SELECT credits_balance FROM tenants WHERE id = ?', tenantId);
-    const after = (t?.credits_balance ?? 0) + credits;
-    q.run('UPDATE tenants SET credits_balance = ? WHERE id = ?', after, tenantId);
-    q.run(`INSERT INTO credit_ledger (id, tenant_id, delta, balance_after, action, location_id, ref_id, note)
-           VALUES (?,?,?,?,?,?,?,?)`, id('led_'), tenantId, credits, after, action, locationId, refId, note);
-    return after;
-  });
+export async function grant(tenantId, credits, action, { locationId = null, refId = null, note = null } = {}) {
+  const row = await q.get('UPDATE tenants SET credits_balance = credits_balance + ? WHERE id = ? RETURNING credits_balance', credits, tenantId);
+  const after = row?.credits_balance ?? 0;
+  await q.run(`INSERT INTO credit_ledger (id, tenant_id, delta, balance_after, action, location_id, ref_id, note)
+               VALUES (?,?,?,?,?,?,?,?)`, id('led_'), tenantId, credits, after, action, locationId, refId, note);
+  return after;
 }
 
 /** Usage analytics: credits & vendor cost by action over N days. */
-export function usageSummary(tenantId, days = 30) {
-  const rows = q.all(`SELECT action, COUNT(*) AS events, -SUM(delta) AS credits, SUM(vendor_cost_usd) AS vendor_cost
+export async function usageSummary(tenantId, days = 30) {
+  const rows = await q.all(`SELECT action, COUNT(*) AS events, -SUM(delta) AS credits, SUM(vendor_cost_usd) AS vendor_cost
                       FROM credit_ledger WHERE tenant_id = ? AND delta < 0 AND created_at >= datetime('now', ?)
                       GROUP BY action ORDER BY credits DESC`, tenantId, `-${days} days`);
   return rows.map((r) => ({ ...r, label: CREDIT_ACTIONS[r.action]?.label || r.action }));

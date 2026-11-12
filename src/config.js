@@ -17,8 +17,17 @@ const env = process.env;
 
 export const config = {
   port: Number(env.PORT || 3000),
-  baseUrl: env.BASE_URL || `http://localhost:${env.PORT || 3000}`,
-  dbPath: env.DB_PATH || path.resolve(process.cwd(), 'data', 'rankpilot.db'),
+  baseUrl: env.BASE_URL
+    || (env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${env.VERCEL_PROJECT_PRODUCTION_URL}` : env.VERCEL_URL ? `https://${env.VERCEL_URL}` : `http://localhost:${env.PORT || 3000}`),
+  isVercel: Boolean(env.VERCEL),
+  cronSecret: env.CRON_SECRET || '',
+  db: {
+    url: env.TURSO_DATABASE_URL || env.DATABASE_URL
+      || (env.VERCEL ? 'file:/tmp/rankpilot.db' : `file:${env.DB_PATH || path.resolve(process.cwd(), 'data', 'rankpilot.db')}`),
+    authToken: env.TURSO_AUTH_TOKEN || env.DATABASE_AUTH_TOKEN || '',
+    // On Vercel without a hosted DB, data lives in /tmp and resets on cold start.
+    get ephemeral() { return Boolean(env.VERCEL) && !(env.TURSO_DATABASE_URL || env.DATABASE_URL); },
+  },
   jwtSecret: env.JWT_SECRET || 'dev-insecure-secret-change-me',
   encryptionKey: env.ENCRYPTION_KEY || 'dev-insecure-encryption-key-change-me', // for OAuth tokens at rest
   schedulerIntervalMs: Number(env.SCHEDULER_INTERVAL_MS || 60_000),
@@ -26,7 +35,7 @@ export const config = {
   google: {
     clientId: env.GOOGLE_CLIENT_ID || '',
     clientSecret: env.GOOGLE_CLIENT_SECRET || '',
-    redirectUri: env.GOOGLE_REDIRECT_URI || `${env.BASE_URL || `http://localhost:${env.PORT || 3000}`}/api/google/callback`,
+    get redirectUri() { return env.GOOGLE_REDIRECT_URI || `${config.baseUrl}/api/google/callback`; },
     get enabled() { return Boolean(this.clientId && this.clientSecret); },
   },
   anthropic: {
@@ -53,6 +62,7 @@ export const config = {
 
 export function integrationStatus() {
   return {
+    database: config.db.ephemeral ? 'ephemeral' : config.db.url.startsWith('file:') ? 'local' : 'live',
     google_business_profile: config.google.enabled ? 'live' : 'demo',
     ai_content: config.anthropic.enabled ? 'live' : 'demo',
     rank_tracking_serp: config.dataforseo.enabled ? 'live' : 'demo',

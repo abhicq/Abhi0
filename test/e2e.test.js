@@ -1,9 +1,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.DB_PATH = ':memory:';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rankpilot-test-'));
+process.env.DB_PATH = path.join(tmpDir, 'test.db');
+process.env.CRON_SECRET = 'test-cron-secret';
 process.env.DISABLE_SCHEDULER = '1';
-for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'GOOGLE_CLIENT_ID', 'DATAFORSEO_LOGIN', 'STRIPE_SECRET_KEY']) delete process.env[k];
+for (const k of ['VERCEL', 'TURSO_DATABASE_URL', 'DATABASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'GOOGLE_CLIENT_ID', 'DATAFORSEO_LOGIN', 'STRIPE_SECRET_KEY']) delete process.env[k];
 
 const { createApp } = await import('../src/server.js');
 const { tick } = await import('../src/scheduler.js');
@@ -18,7 +23,7 @@ const call = async (method, path, body) => {
 };
 
 before(async () => { server = createApp().listen(0); await new Promise((r) => server.once('listening', r)); base = `http://127.0.0.1:${server.address().port}`; });
-after(() => server.close());
+after(() => { server.close(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
 let locId;
 test('signup gives trial credits', async () => {
@@ -68,8 +73,8 @@ test('posts: generate, fill queue, scheduler publishes due', async () => {
   const queue = await call('POST', `/api/locations/${locId}/posts/fill-queue`);
   assert.equal(queue.body.length, 3);
   assert.ok(queue.body.every((x) => x.status === 'scheduled' && x.cta_url?.includes('/t/')), 'WhatsApp tracked CTA');
-  q.run("UPDATE posts SET scheduled_at = datetime('now','-1 minute') WHERE id = ?", queue.body[0].id);
-  q.run("UPDATE locations SET last_autopilot_at = datetime('now')"); // isolate publishing
+  await q.run("UPDATE posts SET scheduled_at = datetime('now','-1 minute') WHERE id = ?", queue.body[0].id);
+  await q.run("UPDATE locations SET last_autopilot_at = datetime('now')"); // isolate publishing
   const s = await tick();
   assert.equal(s.published, 1);
 });
@@ -119,15 +124,15 @@ test('tracking links redirect and count as leads', async () => {
 });
 
 test('insufficient credits returns 402 and does not run', async () => {
-  q.run('UPDATE tenants SET credits_balance = 3');
+  await q.run('UPDATE tenants SET credits_balance = 3');
   const r = await call('POST', `/api/locations/${locId}/posts/generate`, {});
   assert.equal(r.status, 402);
 });
 
 test('full autopilot run', async () => {
-  q.run('UPDATE tenants SET credits_balance = 5000');
-  q.run("UPDATE posts SET status='published', published_at = datetime('now') WHERE status='scheduled'");
-  q.run("UPDATE grid_scans SET created_at = datetime('now','-8 days')");
+  await q.run('UPDATE tenants SET credits_balance = 5000');
+  await q.run("UPDATE posts SET status='published', published_at = datetime('now') WHERE status='scheduled'");
+  await q.run("UPDATE grid_scans SET created_at = datetime('now','-8 days')");
   const r = await call('POST', `/api/locations/${locId}/autopilot/run`);
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.scans.length, 3); assert.ok(r.body.audit > 0);
@@ -145,4 +150,19 @@ test('pricing economics keep healthy margins', async () => {
   for (const p of planEconomics()) assert.ok(p.gross_margin_at_full_use > 0.6, `${p.plan} margin ${p.gross_margin_at_full_use}`);
   const est = await call('POST', '/api/billing/estimate', { locations: 2, avg_lead_value: 200 });
   assert.equal(est.body.recommended.plan, 'growth');
+});
+
+test('cron endpoint requires CRON_SECRET and runs a tick', async () => {
+  const saved = token; token = null;
+  assert.equal((await call('GET', '/api/cron/tick')).status, 401);
+  token = 'test-cron-secret';
+  const r = await call('GET', '/api/cron/tick');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok('published' in r.body && 'deferred' in r.body);
+  token = saved;
+});
+
+test('OAuth state is signed and tamper-proof', async () => {
+  const { handleCallback } = await import('../src/services/google.js');
+  await assert.rejects(handleCallback('code', 'forged.state'), /Invalid or expired OAuth state/);
 });

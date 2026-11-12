@@ -14,11 +14,21 @@ const SCOPE = 'https://www.googleapis.com/auth/business.manage openid email';
 const READ_MASK = 'name,title,storefrontAddress,phoneNumbers,categories,websiteUri,regularHours,profile,serviceArea,latlng,metadata,serviceItems';
 
 // ── OAuth ───────────────────────────────────────────────────────────────────
-const pendingStates = new Map(); // state -> { tenantId, at }
+// Stateless, HMAC-signed OAuth state so the callback can land on any serverless instance.
+const signState = (payload) => {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${body}.${crypto.createHmac('sha256', config.jwtSecret).update(body).digest('base64url')}`;
+};
+function verifyState(state) {
+  const [body, sig] = String(state || '').split('.');
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac('sha256', config.jwtSecret).update(body).digest('base64url');
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  return JSON.parse(Buffer.from(body, 'base64url').toString());
+}
 
 export function authUrl(tenantId) {
-  const state = crypto.randomBytes(16).toString('hex');
-  pendingStates.set(state, { tenantId, at: Date.now() });
+  const state = signState({ tenantId, at: Date.now(), n: crypto.randomBytes(8).toString('hex') });
   const p = new URLSearchParams({
     client_id: config.google.clientId, redirect_uri: config.google.redirectUri, response_type: 'code',
     scope: SCOPE, access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state,
@@ -27,8 +37,7 @@ export function authUrl(tenantId) {
 }
 
 export async function handleCallback(code, state) {
-  const s = pendingStates.get(state);
-  pendingStates.delete(state);
+  const s = verifyState(state);
   if (!s || Date.now() - s.at > 15 * 60_000) throw new Error('Invalid or expired OAuth state');
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -39,7 +48,7 @@ export async function handleCallback(code, state) {
   let email = null;
   if (tok.id_token) { try { email = JSON.parse(Buffer.from(tok.id_token.split('.')[1], 'base64url')).email; } catch { /* ignore */ } }
   const connId = id('gc_');
-  q.run(`INSERT INTO google_connections (id, tenant_id, google_email, access_token_enc, refresh_token_enc, expires_at, mode) VALUES (?,?,?,?,?,?, 'live')`,
+  await q.run(`INSERT INTO google_connections (id, tenant_id, google_email, access_token_enc, refresh_token_enc, expires_at, mode) VALUES (?,?,?,?,?,?, 'live')`,
     connId, s.tenantId, email, encrypt(tok.access_token), encrypt(tok.refresh_token), Date.now() + tok.expires_in * 1000);
   return { tenantId: s.tenantId, connectionId: connId };
 }
@@ -52,7 +61,7 @@ async function accessToken(conn) {
   });
   const tok = await res.json();
   if (!res.ok) throw new Error(`Google token refresh failed: ${tok.error}`);
-  q.run('UPDATE google_connections SET access_token_enc = ?, expires_at = ? WHERE id = ?', encrypt(tok.access_token), Date.now() + tok.expires_in * 1000, conn.id);
+  await q.run('UPDATE google_connections SET access_token_enc = ?, expires_at = ? WHERE id = ?', encrypt(tok.access_token), Date.now() + tok.expires_in * 1000, conn.id);
   return tok.access_token;
 }
 
@@ -66,12 +75,12 @@ async function gfetch(conn, url, opts = {}) {
 }
 
 // ── Adapter: live vs demo ───────────────────────────────────────────────────
-const getConn = (loc) => loc.connection_id ? q.get('SELECT * FROM google_connections WHERE id = ?', loc.connection_id) : null;
-export const isLive = (loc) => getConn(loc)?.mode === 'live';
+const getConn = async (loc) => loc.connection_id ? await q.get('SELECT * FROM google_connections WHERE id = ?', loc.connection_id) : null;
+export const isLive = async (loc) => (await getConn(loc))?.mode === 'live';
 
-export function createDemoConnection(tenantId) {
+export async function createDemoConnection(tenantId) {
   const connId = id('gc_');
-  q.run(`INSERT INTO google_connections (id, tenant_id, google_email, mode) VALUES (?,?,?, 'demo')`, connId, tenantId, 'demo@example.com');
+  await q.run(`INSERT INTO google_connections (id, tenant_id, google_email, mode) VALUES (?,?,?, 'demo')`, connId, tenantId, 'demo@example.com');
   return connId;
 }
 
@@ -108,7 +117,7 @@ function fromGbp(account, l) {
 
 /** Push optimized fields to Google. */
 export async function updateProfile(loc, fields) {
-  const conn = getConn(loc);
+  const conn = await getConn(loc);
   if (!conn || conn.mode === 'demo') return { mode: 'demo', updated: Object.keys(fields) };
   const body = {}; const mask = [];
   if (fields.description != null) { body.profile = { description: fields.description }; mask.push('profile.description'); }
@@ -125,7 +134,7 @@ export async function updateProfile(loc, fields) {
 const v4Parent = (loc) => `${loc.gbp_account}/${loc.gbp_location}`; // accounts/x/locations/y
 
 export async function publishPost(loc, post) {
-  const conn = getConn(loc);
+  const conn = await getConn(loc);
   if (!conn || conn.mode === 'demo') return { name: `${loc.gbp_location || 'locations/demo'}/localPosts/${id()}`, mode: 'demo' };
   const body = { languageCode: 'en', summary: post.summary, topicType: post.topic_type || 'STANDARD' };
   if (post.cta_type) body.callToAction = post.cta_type === 'CALL' ? { actionType: 'CALL' } : { actionType: post.cta_type, url: post.cta_url || loc.website };
@@ -141,7 +150,7 @@ export async function publishPost(loc, post) {
 }
 
 export async function fetchReviews(loc) {
-  const conn = getConn(loc);
+  const conn = await getConn(loc);
   if (!conn || conn.mode === 'demo') return demoReviews(loc);
   const out = []; let pageToken = '';
   do {
@@ -154,7 +163,7 @@ export async function fetchReviews(loc) {
 }
 
 export async function replyToReview(loc, reviewName, comment) {
-  const conn = getConn(loc);
+  const conn = await getConn(loc);
   if (!conn || conn.mode === 'demo') return { mode: 'demo' };
   await gfetch(conn, `https://mybusiness.googleapis.com/v4/${reviewName}/reply`, { method: 'PUT', body: JSON.stringify({ comment }) });
   return { mode: 'live' };
@@ -165,7 +174,7 @@ export const PERF_METRICS = ['CALL_CLICKS', 'WEBSITE_CLICKS', 'BUSINESS_DIRECTIO
 
 /** Daily performance metrics (Google reports with ~3 day lag). */
 export async function fetchPerformance(loc, days = 30) {
-  const conn = getConn(loc);
+  const conn = await getConn(loc);
   if (!conn || conn.mode === 'demo') return demoPerformance(loc, days);
   const end = new Date(Date.now() - 3 * 864e5); const start = new Date(end.getTime() - days * 864e5);
   const p = new URLSearchParams();

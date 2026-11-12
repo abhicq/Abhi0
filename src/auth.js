@@ -51,11 +51,11 @@ export function decrypt(blob) {
   return Buffer.concat([d.update(Buffer.from(enc, 'hex')), d.final()]).toString('utf8');
 }
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const payload = verifyJwt(token);
   if (!payload) return res.status(401).json({ error: 'Unauthorized' });
-  const user = q.get('SELECT id, tenant_id, email, name, role, is_platform_admin FROM users WHERE id = ?', payload.uid);
+  const user = await q.get('SELECT id, tenant_id, email, name, role, is_platform_admin FROM users WHERE id = ?', payload.uid);
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
   req.user = user;
   req.tenantId = user.tenant_id;

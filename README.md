@@ -22,11 +22,49 @@ autopilot. Customers connect a Google Business Profile (GBP), and the platform:
 npm install
 npm run seed      # demo workspace: demo@rankpilot.local / demo12345
 npm start         # http://localhost:3000
-npm test          # 13 end-to-end API tests
+npm test          # 15 end-to-end API tests
 ```
 
-Requires Node ≥ 22.13 (uses the built-in `node:sqlite`, so there are no
-native dependencies).
+Requires Node 22. Storage is libSQL (SQLite-compatible): a local file in
+development, and [Turso](https://turso.tech) in production.
+
+## Deploy to Vercel
+
+The repo is already configured: `vercel.json`, the serverless entry in
+`api/index.js`, and static files served from `public/`.
+
+1. **Import the repo:** in Vercel, choose **Add New → Project**, pick this
+   GitHub repo, and keep the defaults. Leave the Framework Preset on
+   **Other**; `vercel.json` sets the rest.
+2. **Deploy.** With no environment variables the app still runs: it uses
+   an ephemeral demo database in `/tmp`, auto-seeded with the demo login,
+   and the top bar shows a red "data resets" badge. This is fine for a
+   preview, not for real customers.
+3. **Add a persistent database:** in the project, open **Storage → Marketplace**
+   and add **Turso**, which sets `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN`
+   for you. Alternatively, create a DB at turso.tech and add the two
+   variables yourself. The schema is created automatically on first request.
+4. **Set environment variables** (Settings → Environment Variables):
+   `JWT_SECRET`, `ENCRYPTION_KEY`, `CRON_SECRET` (long random strings), plus
+   whichever integration keys you have (`ANTHROPIC_API_KEY`,
+   `DATAFORSEO_*`, `GOOGLE_*`, `STRIPE_*`). `BASE_URL` is optional; it's
+   auto-detected from the Vercel production domain. Set it if you use a
+   custom domain. Redeploy afterwards.
+5. **Google OAuth:** add `https://<your-domain>/api/google/callback` as an
+   authorized redirect URI in Google Cloud.
+6. **Stripe:** point a webhook at `https://<your-domain>/api/billing/webhook`
+   for `checkout.session.completed`, `invoice.paid`,
+   `invoice.payment_failed` and `customer.subscription.deleted`.
+7. **Scheduler:** `vercel.json` registers a Vercel Cron job on
+   `/api/cron/tick`. On the Hobby plan crons run **once a day**, which is
+   too slow for timed posting, so pick one of:
+   - **Vercel Pro:** change the schedule in `vercel.json` to `*/10 * * * *`.
+   - **Free:** the included GitHub Actions workflow
+     (`.github/workflows/scheduler.yml`) calls the endpoint every 15
+     minutes. Add the repo secrets `APP_URL` and `CRON_SECRET`.
+
+Each tick has a 240-second time budget (functions are allowed 300s).
+Locations that don't fit are picked up on the next tick.
 
 ### Demo mode vs live mode
 
@@ -51,11 +89,13 @@ succeed. Request it early.
 ## Architecture
 
 ```
+api/index.js         Vercel serverless entry (exports the Express app)
+vercel.json          rewrites, function duration, cron
 src/
   server.js          Express app (API + static SPA + /t/:code tracking redirect)
   routes.js          REST API (all tenant-scoped)
-  scheduler.js       worker: publishes due posts, runs autopilot, renews credits
-  db.js              SQLite schema (node:sqlite), helpers
+  scheduler.js       tick(): publishes due posts, runs autopilot, renews credits
+  db.js              libSQL client (Turso / local file), schema, helpers
   auth.js            JWT (HS256), scrypt passwords, AES-256-GCM token encryption
   credits.js         atomic charge / refund / grant ledger
   pricing.js         credit catalog, plans, value map, plan economics, ROI model
@@ -85,10 +125,14 @@ If credits run out it pauses the location and logs why.
 resources through it (covered by the tenant-isolation test). OAuth tokens are
 encrypted at rest.
 
-**Scaling path:** move SQLite to Postgres (the schema is portable SQL), run
-`node src/scheduler.js` as a separate worker with `DISABLE_SCHEDULER=1` on the
-web nodes, and move scan fan-out to a queue (DataForSEO standard-queue
-postbacks are about 3× cheaper than live calls).
+**Credits under concurrency:** debits use a single conditional
+`UPDATE … WHERE credits_balance >= ? RETURNING`, so parallel serverless
+invocations can't overdraw a balance.
+
+**Scaling path:** move scan fan-out to a queue (DataForSEO standard-queue
+postbacks are about 3× cheaper than live calls). On a non-serverless host,
+run `node src/scheduler.js` as a worker and set `DISABLE_SCHEDULER=1` on the
+web nodes.
 
 ## Not built yet
 

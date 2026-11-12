@@ -64,7 +64,9 @@ async function refreshMe() {
   state.me = await api('/me');
   $('#creditBalance').textContent = fmt(state.me.tenant.credits_balance);
   $('#planName').textContent = `${state.me.tenant.plan_info?.name || state.me.tenant.plan} plan`;
-  $('#modeBadges').innerHTML = Object.entries(state.me.integrations).filter(([, v]) => v === 'demo').length
+  const ephemeral = state.me.integrations.database === 'ephemeral'
+    ? '<span class="chip bad" title="No hosted database configured (TURSO_DATABASE_URL). Data resets on redeploy or cold start.">Demo database — data resets</span> ' : '';
+  $('#modeBadges').innerHTML = ephemeral + Object.entries(state.me.integrations).filter(([k, v]) => k !== 'database' && v === 'demo').length
     ? `<span class="chip warn" title="${esc(Object.entries(state.me.integrations).map(([k, v]) => `${k}: ${v}`).join('\n'))}">Demo integrations active</span>` : '<span class="chip ok">All integrations live</span>';
 }
 
