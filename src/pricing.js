@@ -27,7 +27,7 @@ export const CREDIT_ACTIONS = {
     unit: 'run', impact: 5, drives: ['Relevance (category + description + services)', 'Conversion rate'],
   },
   keyword_research: {
-    label: 'Keyword research with Google search volume + CPC', credits: 15, vendorCostUsd: 0.075, vendor: 'DataForSEO Keywords Data (Google Ads) per task',
+    label: 'Keyword research with Google search volume + CPC', credits: 20, vendorCostUsd: 0.075, vendor: 'DataForSEO Keywords Data (Google Ads) per task',
     unit: 'run (up to 700 kw)', impact: 4, drives: ['Picks the money keywords to rank for'],
   },
   grid_point: {
@@ -59,7 +59,7 @@ export const CREDIT_ACTIONS = {
     unit: 'number/month', impact: 3, drives: ['Attributes every phone lead to GBP'],
   },
   tracked_call_minute: {
-    label: 'Tracked call minute (forwarded)', credits: 2, vendorCostUsd: 0.0085 + 0.014, vendor: 'Twilio inbound + forward',
+    label: 'Tracked call minute (forwarded)', credits: 4, vendorCostUsd: 0.0085 + 0.014, vendor: 'Twilio inbound + forward',
     unit: 'minute', impact: 2, drives: ['Lead attribution, recordings'],
   },
   audit: {
@@ -103,9 +103,9 @@ const round = (n, d = 4) => Math.round(n * 10 ** d) / 10 ** d;
 
 /** Retail value of one credit for a plan (subscription price / included credits). */
 export function creditRetailUsd(planKey = 'starter') {
-  const p = PLANS[planKey];
-  if (!p || !p.priceMonthly) return PLANS.starter.priceMonthly / PLANS.starter.credits;
-  return p.priceMonthly / p.credits;
+  const p = PLANS[planKey]?.priceMonthly ? PLANS[planKey]
+    : Object.values(PLANS).filter((x) => x.priceMonthly && x.credits).sort((a, b) => a.priceMonthly - b.priceMonthly)[0];
+  return p ? p.priceMonthly / p.credits : 0.01;
 }
 
 /** 360° value map: cost → credits → revenue per action → margin → outcome. */
@@ -166,7 +166,7 @@ export function planEconomics() {
 
 /** Customer ROI projection for a location given lead value assumptions. */
 export function roiProjection({ planKey = 'starter', avgLeadValue = 150, closeRate = 0.3, baselineLeads = 20, liftPct = 0.35 }) {
-  const plan = PLANS[planKey] || PLANS.starter;
+  const plan = PLANS[planKey] || Object.values(PLANS).find((p) => p.priceMonthly) || { priceMonthly: 0 };
   const extraLeads = baselineLeads * liftPct;
   const extraRevenue = extraLeads * closeRate * avgLeadValue;
   return {

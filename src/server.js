@@ -5,6 +5,7 @@ import { config, integrationStatus } from './config.js';
 import { initDb, q } from './db.js';
 import { api, trackingRedirect } from './routes.js';
 import { startScheduler } from './scheduler.js';
+import { refreshSettings } from './settings.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -24,7 +25,7 @@ export function ensureReady() {
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  app.use(async (req, res, next) => { try { await ensureReady(); next(); } catch (e) { next(e); } });
+  app.use(async (req, res, next) => { try { await ensureReady(); await refreshSettings(); next(); } catch (e) { next(e); } });
   // Stripe webhook needs the raw body, so JSON parsing skips that path.
   app.use((req, res, next) => (req.path === '/api/billing/webhook' ? next() : express.json({ limit: '1mb' })(req, res, next)));
   app.use('/api', api);

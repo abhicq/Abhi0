@@ -66,8 +66,11 @@ async function refreshMe() {
   $('#planName').textContent = `${state.me.tenant.plan_info?.name || state.me.tenant.plan} plan`;
   const ephemeral = state.me.integrations.database === 'ephemeral'
     ? '<span class="chip bad" title="No hosted database configured (TURSO_DATABASE_URL). Data resets on redeploy or cold start.">Demo database — data resets</span> ' : '';
-  $('#modeBadges').innerHTML = ephemeral + Object.entries(state.me.integrations).filter(([k, v]) => k !== 'database' && v === 'demo').length
+  const demo = Object.entries(state.me.integrations).filter(([k, v]) => k !== 'database' && v === 'demo').length
     ? `<span class="chip warn" title="${esc(Object.entries(state.me.integrations).map(([k, v]) => `${k}: ${v}`).join('\n'))}">Demo integrations active</span>` : '<span class="chip ok">All integrations live</span>';
+  const imp = state.me.user.impersonated_by ? `<span class="chip bad">Viewing as ${esc(state.me.user.email)}</span> <button class="btn small" id="endImp">Return to admin</button> ` : '';
+  $('#modeBadges').innerHTML = imp + ephemeral + demo;
+  if ($('#endImp')) $('#endImp').onclick = () => { state.token = localStorage.getItem('rp_admin_token'); localStorage.setItem('rp_token', state.token); localStorage.removeItem('rp_admin_token'); location.hash = 'admin?tab=orgs'; boot(); };
 }
 
 async function loadLocations() {
@@ -89,8 +92,9 @@ window.addEventListener('hashchange', route);
 
 function route() {
   const page = (location.hash.slice(1).split('?')[0] || 'dashboard');
-  $('#nav').innerHTML = NAV.map(([k, i, t]) => `<a href="#${k}" class="${k === page ? 'active' : ''}"><span>${i}</span>${t}</a>`).join('');
-  const needsLoc = !['locations', 'billing', 'dashboard'].includes(page);
+  const nav = state.me?.user?.is_platform_admin ? [...NAV, ['admin', '🛡️', 'Admin panel']] : NAV;
+  $('#nav').innerHTML = nav.map(([k, i, t]) => `<a href="#${k}" class="${k === page ? 'active' : ''}"><span>${i}</span>${t}</a>`).join('');
+  const needsLoc = !['locations', 'billing', 'dashboard', 'admin'].includes(page);
   if (needsLoc && !state.locId) { $('#view').innerHTML = `<div class="card empty"><h2>Connect your first Google Business Profile</h2><p>Everything starts with a location.</p><a class="btn primary" href="#locations">Connect GBP</a></div>`; return; }
   const v = VIEWS[page] || VIEWS.dashboard;
   $('#view').innerHTML = '<div class="empty">Loading…</div>';
@@ -268,7 +272,7 @@ VIEWS.keywords = async () => {
   const kws = await api(`/locations/${l.id}/keywords`);
   $('#view').innerHTML = `
   <div class="page-head"><div><h1>Keyword strategy</h1><div class="muted">Generated from the nature of business, services, city & service areas. Autopilot rotates these through posts, replies and scans.</div></div><div class="spacer"></div>
-    <button class="btn" id="rebuild">Regenerate (free)</button><button class="btn primary" id="vol">Fetch search volume & CPC · 15 credits</button></div>
+    <button class="btn" id="rebuild">Regenerate (free)</button><button class="btn primary" id="vol">Fetch search volume & CPC · 20 credits</button></div>
   <div class="card"><form id="addKw" class="row"><input name="keyword" placeholder="Add a custom keyword, e.g. tankless water heater austin"><select name="priority" class="fit" style="width:120px"><option value="1">P1 money</option><option value="2">P2</option><option value="3">P3 long tail</option></select><button class="btn primary">Add</button></form></div>
   <div class="card" style="margin-top:16px"><div class="table-wrap"><table><tr><th>Keyword</th><th>Priority</th><th>Intent</th><th>Volume/mo</th><th>CPC</th><th>Lead value</th><th>Tracked</th><th></th></tr>
   ${kws.map((k) => `<tr><td><b>${esc(k.keyword)}</b></td><td><span class="chip ${k.priority === 1 ? 'ok' : ''}">P${k.priority}</span></td><td class="muted">${esc(k.intent || '')}</td><td>${fmt(k.search_volume)}</td><td>${k.cpc ? '$' + k.cpc : '—'}</td>
@@ -469,7 +473,7 @@ VIEWS.billing = async () => {
   const b = await api('/billing');
   const ok = new URLSearchParams(location.hash.split('?')[1] || '').get('ok');
   if (ok) toast('Payment received — credits added');
-  const plans = Object.entries(b.plans).filter(([, p]) => p.priceMonthly);
+  const plans = Object.entries(b.plans).filter(([k, p]) => p.priceMonthly && (!p.hidden || k === b.plan));
   $('#view').innerHTML = `
   <div class="page-head"><div><h1>Billing & value</h1><div class="muted">Plan: <b>${esc(b.plans[b.plan]?.name || b.plan)}</b> (${b.plan_status}) · ${fmt(b.balance)} credits · renews ${when(b.renews_at)}</div></div></div>
   <div class="grid g4">${plans.map(([k, p]) => `<div class="card plan ${p.popular ? 'popular' : ''}">${p.popular ? '<span class="badge-pop">Best value</span>' : ''}
@@ -502,6 +506,217 @@ VIEWS.billing = async () => {
         <div class="kpi"><div class="label">Projected ROI</div><div class="value up">${r.roi.roi_multiple}×</div><div class="sub">${money(r.roi.extra_revenue)} extra revenue · pays back after ${r.roi.payback_leads} closed lead(s)</div></div></div>` : '<div class="muted">Contact sales for 40+ locations.</div>';
     });
   };
+};
+
+// ── Admin panel (platform admins only) ──────────────────────────────────────
+const ADMIN_TABS = [['overview', 'Overview'], ['orgs', 'Organizations'], ['plans', 'Plans & pricing'], ['keys', 'API keys'], ['citations', 'Citation queue'], ['audit', 'Audit log']];
+const STATUS_CHIP = { active: 'ok', past_due: 'warn', suspended: 'bad', cancelled: 'bad' };
+const hashParam = (k) => new URLSearchParams(location.hash.split('?')[1] || '').get(k);
+const go = (tab, extra = '') => { location.hash = `admin?tab=${tab}${extra}`; };
+
+VIEWS.admin = async () => {
+  if (!state.me.user.is_platform_admin) { $('#view').innerHTML = '<div class="card empty">Admins only.</div>'; return; }
+  const tab = hashParam('tab') || 'overview';
+  $('#view').innerHTML = `<div class="page-head"><div><h1>Admin panel</h1><div class="muted">Run the platform: organizations, subscriptions, plans, credit pricing and integration keys.</div></div></div>
+    <div class="row" style="margin-bottom:16px;flex-wrap:wrap">${ADMIN_TABS.map(([k, t]) => `<a href="#admin?tab=${k}" class="btn small fit ${k === tab ? 'primary' : ''}">${t}</a>`).join('')}</div>
+    <div id="adminBody"><div class="empty">Loading…</div></div>`;
+  await (ADMIN[tab] || ADMIN.overview)($('#adminBody'));
+};
+
+const ADMIN = {};
+
+ADMIN.overview = async (el) => {
+  const o = await api('/admin/overview');
+  const kpi = (l, v, sub = '') => `<div class="card kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`;
+  el.innerHTML = `<div class="grid g4">
+      ${kpi('MRR', money(o.mrr), `ARR ${money(o.arr)} · ARPA ${money(o.arpa)}`)}
+      ${kpi('Organizations', fmt(o.organizations), `${fmt(o.paying)} paying · +${fmt(o.signups_30d)} in 30d`)}
+      ${kpi('Est. gross margin', o.est_gross_margin == null ? '—' : o.est_gross_margin + '%', `vendor cost 30d ${money(o.vendor_cost_30d)}`)}
+      ${kpi('Credits used (30d)', fmt(o.credits_used_30d), `${fmt(o.low_credit)} paying org(s) under 10% credits`)}
+    </div>
+    <div class="grid g4" style="margin-top:16px">
+      ${kpi('Locations', fmt(o.locations))}${kpi('Posts published (30d)', fmt(o.posts_published_30d))}
+      ${kpi('Geo-grid scans (30d)', fmt(o.scans_30d))}${kpi('Tracked leads (30d)', fmt(o.leads_30d), `${fmt(o.citations_open)} citations awaiting fulfilment`)}
+    </div>
+    <div class="grid g3" style="margin-top:16px">
+      <div class="card"><h2>Subscriptions by plan</h2>${Object.entries(o.by_plan).map(([k, n]) => `<div class="row small"><span>${esc(state.meta.plans[k]?.name || k)}</span><b class="fit">${n}</b></div><div class="bar" style="margin-bottom:6px"><i style="width:${(n / o.organizations) * 100}%"></i></div>`).join('') || '<div class="muted">None</div>'}
+        <h3 style="margin-top:12px">By status</h3>${Object.entries(o.by_status).map(([k, n]) => `<span class="chip ${STATUS_CHIP[k] || ''}">${k} ${n}</span> `).join('')}</div>
+      <div class="card"><h2>Trials ending in 7 days</h2>${o.trials_expiring.map((t) => `<div class="item"><b>${esc(t.name)}</b><div class="meta"><span>${esc(t.email || '')}</span><span>ends ${when(t.plan_renews_at)}</span><a href="#admin?tab=orgs&id=${t.id}">open</a></div></div>`).join('') || '<div class="muted">None — good time to run a trial campaign.</div>'}</div>
+      <div class="card"><h2>Integrations</h2>${Object.entries(o.integrations).map(([k, v]) => `<div class="row small"><span>${esc(k.replace(/_/g, ' '))}</span><span class="fit chip ${v === 'live' ? 'ok' : v === 'ephemeral' ? 'bad' : 'warn'}">${v}</span></div>`).join('')}
+        <a class="btn small" style="margin-top:10px" href="#admin?tab=keys">Manage API keys</a></div>
+    </div>`;
+};
+
+ADMIN.orgs = async (el) => {
+  const sel = hashParam('id');
+  if (sel) return ADMIN.org(el, sel);
+  const qv = hashParam('q') || '', plan = hashParam('plan') || '', status = hashParam('status') || '';
+  const rows = await api(`/admin/tenants?q=${encodeURIComponent(qv)}&plan=${plan}&status=${status}`);
+  const plans = Object.entries(state.meta.plans);
+  el.innerHTML = `<div class="card"><form id="orgFilter" class="row">
+      <input name="q" placeholder="Search name or email" value="${esc(qv)}">
+      <select name="plan" class="fit" style="width:160px"><option value="">All plans</option>${plans.map(([k, p]) => `<option value="${k}" ${k === plan ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <select name="status" class="fit" style="width:160px"><option value="">All statuses</option>${Object.keys(STATUS_CHIP).map((s) => `<option ${s === status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <button class="btn primary">Filter</button></form></div>
+    <div class="card" style="margin-top:16px"><div class="table-wrap"><table><tr><th>Organization</th><th>Plan</th><th>Status</th><th>MRR</th><th>Credits</th><th>Used 30d</th><th>Vendor $ 30d</th><th>Locations</th><th>Renews</th><th></th></tr>
+    ${rows.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="muted small">${esc(t.owner_email || '')} · ${t.users} user(s)</div></td>
+      <td>${esc(t.plan_name)}</td><td><span class="chip ${STATUS_CHIP[t.plan_status] || ''}">${t.plan_status}</span></td><td>${money(t.mrr)}</td>
+      <td>${fmt(t.credits_balance)}</td><td>${fmt(t.credits_used_30d)}</td><td>$${Number(t.vendor_cost_30d).toFixed(2)}</td><td>${t.locations}</td><td class="small">${when(t.plan_renews_at)}</td>
+      <td><a class="btn small" href="#admin?tab=orgs&id=${t.id}">Manage</a></td></tr>`).join('') || '<tr><td colspan="10" class="muted">No organizations match.</td></tr>'}</table></div></div>`;
+  $('#orgFilter').onsubmit = (e) => { e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); go('orgs', `&q=${encodeURIComponent(f.q)}&plan=${f.plan}&status=${f.status}`); };
+};
+
+ADMIN.org = async (el, tid) => {
+  const d = await api(`/admin/tenants/${tid}`);
+  const t = d.tenant;
+  const renewVal = t.plan_renews_at ? t.plan_renews_at.replace(' ', 'T').slice(0, 16) : '';
+  el.innerHTML = `<a href="#admin?tab=orgs" class="btn small ghost">← All organizations</a>
+    <div class="page-head" style="margin-top:10px"><div><h2 style="margin:0">${esc(t.name)}</h2><div class="muted small">${t.id} · created ${when(t.created_at)}${t.stripe_customer_id ? ` · Stripe ${esc(t.stripe_customer_id)}` : ''}</div></div><div class="spacer"></div>
+      <button class="btn" id="impBtn">Log in as this organization</button></div>
+    <div class="grid g2">
+      <div class="card"><h2>Subscription</h2><form id="subForm" class="list">
+        <label>Organization name<input name="name" value="${esc(t.name)}"></label>
+        <div class="row"><label>Plan<select name="plan">${Object.entries(state.meta.plans).map(([k, p]) => `<option value="${k}" ${k === t.plan ? 'selected' : ''}>${esc(p.name)} — $${p.priceMonthly}/mo${p.hidden ? ' (hidden)' : ''}</option>`).join('')}</select></label>
+          <label>Status<select name="plan_status">${Object.keys(STATUS_CHIP).map((s) => `<option ${s === t.plan_status ? 'selected' : ''}>${s}</option>`).join('')}</select></label></div>
+        <div class="row"><label>Renews / trial ends<input type="datetime-local" name="plan_renews_at" value="${renewVal}"></label>
+          <label>White-label name<input name="white_label_name" value="${esc(t.white_label_name || '')}" placeholder="Agency plans"></label></div>
+        <label><span><input type="checkbox" name="grant_plan_credits" style="width:auto" checked> Grant the new plan's monthly credits when changing plan</span></label>
+        <p class="muted small" style="margin:0">Admin plan changes don't charge the card. If this org pays via Stripe, also change it in the Stripe dashboard.</p>
+        <button class="btn primary">Save subscription</button></form></div>
+      <div class="card"><h2>Credits · balance ${fmt(t.credits_balance)}</h2><form id="credForm" class="row">
+          <input name="delta" type="number" placeholder="+5000 or -500" required><input name="note" placeholder="Reason (required, shown in ledger)" required><button class="btn primary">Apply</button></form>
+        <div class="table-wrap" style="max-height:260px;overflow:auto;margin-top:10px"><table><tr><th>When</th><th>Action</th><th>Δ</th><th>Balance</th></tr>
+          ${d.ledger.map((x) => `<tr><td class="small">${when(x.created_at)}</td><td class="small">${esc(x.action)} <span class="muted">${esc(x.note || '')}</span></td><td class="${x.delta > 0 ? 'up' : ''}">${x.delta > 0 ? '+' : ''}${fmt(x.delta)}</td><td>${fmt(x.balance_after)}</td></tr>`).join('')}</table></div></div>
+    </div>
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h2>Users</h2>${d.users.map((u) => `<div class="row small"><span>${esc(u.email)} ${u.is_platform_admin ? '<span class="chip">admin</span>' : ''}</span><span class="fit muted">${u.role} · ${when(u.created_at)}</span></div>`).join('')}
+        <h2 style="margin-top:14px">Locations (${d.locations.length})</h2>${d.locations.map((l) => `<div class="row small"><span>${esc(l.name)} · ${esc(l.city || '')}</span><span class="fit muted">${l.gbp_location ? 'GBP' : 'manual'} · autopilot ${l.autopilot?.enabled === false ? 'off' : 'on'}</span></div>`).join('') || '<div class="muted small">None</div>'}</div>
+      <div class="card"><h2>Recent activity</h2>${d.activity.map((a) => `<div class="small"><span class="chip">${esc(a.kind)}</span> ${esc(a.message)} <span class="muted">· ${when(a.created_at)}</span></div>`).join('') || '<div class="muted">No activity.</div>'}</div>
+    </div>`;
+  $('#subForm').onsubmit = (e) => {
+    e.preventDefault(); const fd = new FormData(e.target);
+    const body = { name: fd.get('name'), plan: fd.get('plan'), plan_status: fd.get('plan_status'), white_label_name: fd.get('white_label_name') || null, grant_plan_credits: fd.has('grant_plan_credits') };
+    if (fd.get('plan_renews_at')) body.plan_renews_at = new Date(fd.get('plan_renews_at')).toISOString();
+    act(e.submitter, async () => { await api(`/admin/tenants/${tid}`, { method: 'PATCH', body }); route(); }, 'Subscription updated');
+  };
+  $('#credForm').onsubmit = (e) => {
+    e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+    act(e.submitter, async () => { const r = await api(`/admin/tenants/${tid}/credits`, { method: 'POST', body: { delta: Number(f.delta), note: f.note } }); route(); return r; }, (r) => `New balance ${fmt(r.balance)}`);
+  };
+  $('#impBtn').onclick = (e) => act(e.target, async () => {
+    if (!confirm(`Log in as ${t.name}? This is recorded in the audit log.`)) return;
+    const r = await api(`/admin/tenants/${tid}/impersonate`, { method: 'POST' });
+    localStorage.setItem('rp_admin_token', state.token);
+    state.token = r.token; localStorage.setItem('rp_token', r.token); location.hash = 'dashboard'; await boot();
+  });
+};
+
+ADMIN.plans = async (el) => {
+  const p = await api('/admin/pricing');
+  const econ = Object.fromEntries(p.economics.map((x) => [x.plan, x]));
+  const custom = (k) => p.customized.includes(k) ? '<span class="chip warn">customized</span>' : '<span class="chip">defaults</span>';
+  const planCard = (k, pl) => `<form class="card plan" data-plan="${k}">
+      <div class="row"><b>${esc(pl.name)}</b><span class="fit chip">${fmt(p.subscribers[k] || 0)} subscribers</span>${pl.hidden ? '<span class="fit chip warn">hidden</span>' : ''}${pl.popular ? '<span class="fit chip ok">popular</span>' : ''}</div>
+      <div class="muted small">key: <code>${esc(k)}</code>${econ[k] ? ` · $${(econ[k].usd_per_credit * 1000).toFixed(2)}/1k credits · margin @100% use <b>${Math.round(econ[k].gross_margin_at_full_use * 100)}%</b>` : ''}</div>
+      <div class="row"><label>Name<input name="name" value="${esc(pl.name)}"></label>${k === 'trial' ? `<label>Trial days<input name="trialDays" type="number" value="${pl.trialDays || 14}"></label>` : `<label>$ / month<input name="priceMonthly" type="number" step="0.01" value="${pl.priceMonthly}"></label><label>$ / year<input name="priceAnnual" type="number" step="0.01" value="${pl.priceAnnual ?? ''}"></label>`}</div>
+      <div class="row"><label>Credits / month<input name="credits" type="number" value="${pl.credits}"></label><label>Locations<input name="locations" type="number" value="${pl.locations}"></label><label>Max grid<input name="maxGrid" type="number" step="2" min="3" value="${pl.maxGrid || 5}"></label><label>Seats<input name="seats" type="number" value="${pl.seats || 1}"></label></div>
+      <label>Features (one per line)<textarea name="features" style="min-height:90px">${esc((pl.features || []).join('\n'))}</textarea></label>
+      <div class="row small"><span class="fit"><input type="checkbox" name="popular" ${pl.popular ? 'checked' : ''} style="width:auto"> Popular badge</span><span class="fit"><input type="checkbox" name="whiteLabel" ${pl.whiteLabel ? 'checked' : ''} style="width:auto"> White-label</span>${k !== 'trial' ? `<span class="fit"><input type="checkbox" name="hidden" ${pl.hidden ? 'checked' : ''} style="width:auto"> Hidden (grandfathered)</span>` : ''}</div>
+      <div class="row"><button class="btn primary fit">Save</button>${k !== 'trial' ? `<button type="button" class="btn ghost fit" data-del="${k}">Delete</button>` : ''}</div></form>`;
+  el.innerHTML = `<div class="page-head"><h2 style="margin:0">Subscription plans ${custom('pricing_plans')}</h2><div class="spacer"></div><button class="btn small" data-reset="plans">Reset plans to defaults</button></div>
+    <p class="muted small">Price changes apply to new checkouts. Existing Stripe subscriptions keep their price until changed in Stripe. Hide a plan to stop selling it while current subscribers keep it.</p>
+    <div class="grid g3">${Object.entries(p.plans).map(([k, pl]) => planCard(k, pl)).join('')}
+      <form class="card plan" data-plan="__new"><b>➕ New plan</b>
+        <div class="row"><label>Key<input name="key" placeholder="e.g. enterprise" required></label><label>Name<input name="name" required></label></div>
+        <div class="row"><label>$ / month<input name="priceMonthly" type="number" step="0.01" required></label><label>Credits<input name="credits" type="number" required></label></div>
+        <div class="row"><label>Locations<input name="locations" type="number" value="1"></label><label>Max grid<input name="maxGrid" type="number" step="2" min="3" value="7"></label></div>
+        <label>Features (one per line)<textarea name="features" style="min-height:70px"></textarea></label>
+        <button class="btn primary">Create plan</button></form></div>
+    <div class="card" style="margin-top:16px"><div class="page-head"><h2 style="margin:0">Credit top-ups ${custom('pricing_topups')}</h2><div class="spacer"></div><button class="btn small" data-reset="topups">Reset</button></div>
+      <form id="topForm"><div id="topRows" class="list">${p.topups.map((t) => `<div class="row" data-top><input name="credits" type="number" value="${t.credits}" placeholder="Credits"><input name="priceUsd" type="number" step="0.01" value="${t.priceUsd}" placeholder="Price $"><input type="hidden" name="id" value="${esc(t.id)}"><button type="button" class="btn small ghost fit" data-rm>✕</button></div>`).join('')}</div>
+      <div class="row" style="margin-top:8px"><button type="button" class="btn small fit" id="addTop">+ Add pack</button><button class="btn primary fit">Save top-ups</button></div></form></div>
+    <div class="card" style="margin-top:16px"><div class="page-head"><h2 style="margin:0">Credit price per action ${custom('pricing_actions')}</h2><div class="spacer"></div><button class="btn small" data-reset="actions">Reset</button></div>
+      <p class="muted small">Set what each automation costs customers in credits, and your real vendor cost so margins stay accurate. Margin is shown at the Starter plan credit price.</p>
+      <form id="actForm"><div class="table-wrap"><table><tr><th>Action</th><th>Credits</th><th>Vendor cost $</th><th>Margin</th><th>Powered by</th></tr>
+      ${p.value_map.map((v) => `<tr><td><b>${esc(v.label)}</b><div class="muted small">per ${esc(v.unit)}</div></td>
+        <td><input name="${v.key}.credits" type="number" min="0" value="${v.credits}" style="width:90px"></td>
+        <td><input name="${v.key}.vendorCostUsd" type="number" step="0.0001" min="0" value="${v.vendor_cost_usd}" style="width:110px"></td>
+        <td>${v.gross_margin == null ? '<span class="muted">free</span>' : `<span class="chip ${v.gross_margin >= 0.6 ? 'ok' : v.gross_margin >= 0.3 ? 'warn' : 'bad'}">${Math.round(v.gross_margin * 100)}%</span>`}</td>
+        <td class="muted small">${esc(v.vendor)}</td></tr>`).join('')}</table></div>
+      <button class="btn primary" style="margin-top:10px">Save credit prices</button></form></div>`;
+
+  const planBody = (f) => {
+    const fd = new FormData(f); const o = Object.fromEntries(fd);
+    for (const k of ['popular', 'whiteLabel', 'hidden']) o[k] = fd.has(k);
+    return o;
+  };
+  el.querySelectorAll('form[data-plan]').forEach((f) => (f.onsubmit = (e) => {
+    e.preventDefault(); const body = planBody(f);
+    const key = f.dataset.plan === '__new' ? String(body.key || '').trim().toLowerCase() : f.dataset.plan;
+    act(e.submitter, async () => { await api(`/admin/pricing/plans/${encodeURIComponent(key)}`, { method: 'PUT', body }); state.meta = await api('/meta'); route(); }, 'Plan saved');
+  }));
+  el.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => confirm(`Delete plan "${b.dataset.del}"?`) && act(b, async () => { await api(`/admin/pricing/plans/${b.dataset.del}`, { method: 'DELETE' }); state.meta = await api('/meta'); route(); }, 'Plan deleted')));
+  el.querySelectorAll('[data-reset]').forEach((b) => (b.onclick = () => confirm(`Reset ${b.dataset.reset} to the built-in defaults?`) && act(b, async () => { await api('/admin/pricing/reset', { method: 'POST', body: { what: b.dataset.reset } }); state.meta = await api('/meta'); route(); }, 'Reset to defaults')));
+  const bindRm = () => el.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => b.closest('[data-top]').remove()));
+  bindRm();
+  $('#addTop').onclick = () => { $('#topRows').insertAdjacentHTML('beforeend', '<div class="row" data-top><input name="credits" type="number" placeholder="Credits"><input name="priceUsd" type="number" step="0.01" placeholder="Price $"><input type="hidden" name="id" value=""><button type="button" class="btn small ghost fit" data-rm>✕</button></div>'); bindRm(); };
+  $('#topForm').onsubmit = (e) => {
+    e.preventDefault();
+    const topups = [...el.querySelectorAll('[data-top]')].map((r) => ({ id: r.querySelector('[name=id]').value, credits: Number(r.querySelector('[name=credits]').value), priceUsd: Number(r.querySelector('[name=priceUsd]').value) }));
+    act(e.submitter, async () => { await api('/admin/pricing/topups', { method: 'PUT', body: { topups } }); state.meta = await api('/meta'); route(); }, 'Top-ups saved');
+  };
+  $('#actForm').onsubmit = (e) => {
+    e.preventDefault(); const body = {};
+    for (const [k, v] of new FormData(e.target)) { const [a, f] = k.split('.'); (body[a] ??= {})[f] = Number(v); }
+    act(e.submitter, async () => { await api('/admin/pricing/actions', { method: 'PUT', body }); state.meta = await api('/meta'); route(); }, 'Credit prices saved');
+  };
+};
+
+ADMIN.keys = async (el) => {
+  const d = await api('/admin/keys');
+  const groups = { anthropic: 'Claude AI (posts, replies, optimization)', dataforseo: 'DataForSEO (rank tracking, keyword volume)', google: 'Google Business Profile (OAuth)', stripe: 'Stripe (billing)' };
+  const src = { panel: '<span class="chip ok">set in panel</span>', env: '<span class="chip">from env var</span>', unset: '<span class="chip warn">not set</span>' };
+  el.innerHTML = `<p class="muted small">Keys saved here are encrypted with <code>ENCRYPTION_KEY</code> and override environment variables. Leave a field blank to keep the current value. Changes apply on every server instance within 30 seconds.</p>
+    <div class="grid g2">${Object.entries(groups).map(([g, title]) => `<form class="card" data-group="${g}"><div class="row"><h2 style="margin:0">${title}</h2><span id="test-${g}" class="fit small"></span></div>
+      <div class="list" style="margin-top:10px">${d.keys.filter((k) => k.group === g).map((k) => `<label><span>${esc(k.label)} ${src[k.source]} ${k.display ? `<code>${esc(k.display)}</code>` : ''}</span>
+        <input name="${k.name}" type="${k.secret ? 'password' : 'text'}" autocomplete="off" placeholder="${k.source === 'unset' ? 'Enter value' : 'Enter a new value to replace'}">
+        ${k.hint ? `<span class="muted small" style="font-weight:400">${esc(k.hint)}</span>` : ''}
+        ${k.source === 'panel' ? `<a href="#" data-clear="${k.name}" class="small">Remove panel value</a>` : ''}</label>`).join('')}
+      ${g === 'google' ? `<div class="muted small">Authorized redirect URI: <code>${esc(d.redirect_uri)}</code></div>` : ''}
+      ${g === 'stripe' ? `<div class="muted small">Webhook endpoint: <code>${esc(d.webhook_url)}</code> — events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.deleted</div>` : ''}
+      </div><div class="row" style="margin-top:10px"><button class="btn primary fit">Save</button><button type="button" class="btn fit" data-test="${g}">Test connection</button></div></form>`).join('')}</div>`;
+  el.querySelectorAll('form[data-group]').forEach((f) => (f.onsubmit = (e) => {
+    e.preventDefault();
+    const body = Object.fromEntries([...new FormData(f)].filter(([, v]) => String(v).trim()));
+    if (!Object.keys(body).length) return toast('Nothing to save — enter a value first', true);
+    act(e.submitter, async () => { const r = await api('/admin/keys', { method: 'PUT', body }); route(); return r; }, (r) => `Saved ${r.changed.length} key(s)`);
+  }));
+  el.querySelectorAll('[data-clear]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); confirm(`Remove ${a.dataset.clear} from the panel? The env var (if any) will be used.`) && act(null, async () => { await api(`/admin/keys/${a.dataset.clear}`, { method: 'DELETE' }); route(); }, 'Removed'); }));
+  el.querySelectorAll('[data-test]').forEach((b) => (b.onclick = () => act(b, async () => {
+    const r = await api(`/admin/keys/test/${b.dataset.test}`, { method: 'POST' });
+    $(`#test-${b.dataset.test}`).innerHTML = `<span class="chip ${r.ok ? 'ok' : 'bad'}">${r.ok ? '✓' : '✕'} ${esc(r.detail)}</span>`;
+  })));
+};
+
+ADMIN.citations = async (el) => {
+  const rows = await api('/admin/citations');
+  el.innerHTML = `<div class="card"><h2>Citation fulfilment queue (${rows.length})</h2><p class="muted small">Orders paid in credits. Submit each listing, then mark it live with the URL. Rejecting refunds the credits automatically.</p>
+    <div class="table-wrap"><table><tr><th>Business (NAP)</th><th>Directory</th><th>Status</th><th>Ordered</th><th>Listing URL</th><th></th></tr>
+    ${rows.map((c) => `<tr><td><b>${esc(c.name)}</b><div class="muted small">${esc([c.address, c.city].filter(Boolean).join(', '))} · ${esc(c.phone || '')}<br>${esc(c.website || '')}</div></td>
+      <td>${esc(c.directory_id)}</td><td><select data-st="${c.id}" style="width:140px">${['queued', 'in_progress', 'submitted', 'live', 'rejected'].map((s) => `<option ${s === c.status ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td class="small">${when(c.created_at)}<div class="muted">${fmt(c.credits_charged)} cr</div></td><td><input data-url="${c.id}" value="${esc(c.listing_url || '')}" placeholder="https://…"></td>
+      <td><button class="btn small primary" data-save="${c.id}">Update</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Queue is empty.</td></tr>'}</table></div></div>`;
+  el.querySelectorAll('[data-save]').forEach((b) => (b.onclick = () => act(b, async () => {
+    const cid = b.dataset.save;
+    await api(`/admin/citations/${cid}`, { method: 'PATCH', body: { status: $(`[data-st="${cid}"]`).value, listing_url: $(`[data-url="${cid}"]`).value || null } });
+    route();
+  }, 'Citation updated')));
+};
+
+ADMIN.audit = async (el) => {
+  const rows = await api('/admin/audit');
+  el.innerHTML = `<div class="card"><h2>Audit log</h2><p class="muted small">Every admin change. API key values are never recorded.</p><div class="table-wrap"><table><tr><th>When</th><th>Admin</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+    ${rows.map((a) => `<tr><td class="small">${when(a.created_at)}</td><td class="small">${esc(a.admin_email || '')}</td><td><span class="chip">${esc(a.action)}</span></td><td class="small">${esc(a.target || '')}</td><td class="muted small" style="max-width:420px;word-break:break-word">${esc((a.detail || '').slice(0, 300))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No admin actions yet.</td></tr>'}</table></div></div>`;
 };
 
 if (state.token) boot(); else { $('#auth').classList.remove('hidden'); }

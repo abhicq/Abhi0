@@ -16,13 +16,28 @@ autopilot. Customers connect a Google Business Profile (GBP), and the platform:
 | **Lead tracking & ROI** | Tracked `call` / `sms` / `whatsapp` links (`/t/:code` → logs → `tel:` / `sms:` / `wa.me`), combined with Google-reported actions and valued as lead value × close rate. |
 | **Credits & billing** | Credit ledger with atomic debits and automatic refunds when a vendor call fails. 4 plans plus top-ups via Stripe. A **360° value map** shows the vendor cost, price, margin and ranking impact of every action. See [`docs/PRICING.md`](docs/PRICING.md). |
 
+## Admin panel (platform owner)
+
+Platform admins see **Admin panel** in the sidebar. Anyone whose email is
+listed in `ADMIN_EMAILS` gets admin rights at signup or login; the seeded demo
+user is an admin. Every change is recorded in the audit log.
+
+| Tab | What you can do |
+|---|---|
+| **Overview** | MRR/ARR/ARPA, paying organizations, signups, estimated gross margin (vendor cost vs revenue), credit burn, trials ending in the next 7 days, integration health |
+| **Organizations** | Search and filter all customers. For each one: change plan or status (active / past due / suspended / cancelled), set the renewal or trial-end date, grant or deduct credits (a reason is required and shown in their ledger), see users, locations and activity, and **log in as** the organization for support. Suspended organizations can only reach their billing page. |
+| **Plans & pricing** | Create, edit, hide (grandfather) or delete plans: price, credits, locations, max grid, seats, features. Edit credit top-up packs and the **credit price of every action**, with live margins from your real vendor costs. Reset any section to the defaults. |
+| **API keys** | Enter Anthropic, DataForSEO, Google OAuth and Stripe keys with **Test connection**. Keys are encrypted at rest with `ENCRYPTION_KEY`, override env vars, are shown masked, and reach every server instance within 30 seconds. The tab also shows the exact Google redirect URI and Stripe webhook URL to register. |
+| **Citation queue** | Fulfilment queue for ordered citations. Mark each one in progress, submitted or live with its URL; rejected citations refund their credits automatically. |
+| **Audit log** | Who changed what and when. Key values are never logged. |
+
 ## Quick start
 
 ```bash
 npm install
 npm run seed      # demo workspace: demo@rankpilot.local / demo12345
 npm start         # http://localhost:3000
-npm test          # 15 end-to-end API tests
+npm test          # 20 end-to-end API tests
 ```
 
 Requires Node 22. Storage is libSQL (SQLite-compatible): a local file in

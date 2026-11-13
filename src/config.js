@@ -15,6 +15,10 @@ if (fs.existsSync(envFile)) {
 
 const env = process.env;
 
+/** Values saved in the admin panel (filled by settings.js). They take precedence over env vars. */
+export const overrides = {};
+const val = (k) => overrides[k] || env[k] || '';
+
 export const config = {
   port: Number(env.PORT || 3000),
   baseUrl: env.BASE_URL
@@ -32,31 +36,29 @@ export const config = {
   encryptionKey: env.ENCRYPTION_KEY || 'dev-insecure-encryption-key-change-me', // for OAuth tokens at rest
   schedulerIntervalMs: Number(env.SCHEDULER_INTERVAL_MS || 60_000),
 
+  adminEmails: (env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean),
+
   google: {
-    clientId: env.GOOGLE_CLIENT_ID || '',
-    clientSecret: env.GOOGLE_CLIENT_SECRET || '',
+    get clientId() { return val('GOOGLE_CLIENT_ID'); },
+    get clientSecret() { return val('GOOGLE_CLIENT_SECRET'); },
     get redirectUri() { return env.GOOGLE_REDIRECT_URI || `${config.baseUrl}/api/google/callback`; },
     get enabled() { return Boolean(this.clientId && this.clientSecret); },
   },
   anthropic: {
+    get apiKey() { return val('ANTHROPIC_API_KEY'); },
     // The SDK also resolves ANTHROPIC_AUTH_TOKEN / `ant auth login` profiles.
-    enabled: Boolean(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
-    model: env.ANTHROPIC_MODEL || 'claude-opus-5-5',
+    get enabled() { return Boolean(this.apiKey || env.ANTHROPIC_AUTH_TOKEN); },
+    get model() { return val('ANTHROPIC_MODEL') || 'claude-opus-5-5'; },
   },
   dataforseo: {
-    login: env.DATAFORSEO_LOGIN || '',
-    password: env.DATAFORSEO_PASSWORD || '',
+    get login() { return val('DATAFORSEO_LOGIN'); },
+    get password() { return val('DATAFORSEO_PASSWORD'); },
     get enabled() { return Boolean(this.login && this.password); },
   },
   stripe: {
-    secretKey: env.STRIPE_SECRET_KEY || '',
-    webhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+    get secretKey() { return val('STRIPE_SECRET_KEY'); },
+    get webhookSecret() { return val('STRIPE_WEBHOOK_SECRET'); },
     get enabled() { return Boolean(this.secretKey); },
-  },
-  twilio: {
-    accountSid: env.TWILIO_ACCOUNT_SID || '',
-    authToken: env.TWILIO_AUTH_TOKEN || '',
-    get enabled() { return Boolean(this.accountSid && this.authToken); },
   },
 };
 

@@ -5,8 +5,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import { config } from '../config.js';
 import { getIndustry } from './industries.js';
 
-let client;
-const getClient = () => (client ??= new Anthropic());
+let client, clientKey;
+/** Recreated when the API key is changed in the admin panel. */
+function getClient() {
+  const key = config.anthropic.apiKey || undefined;
+  if (!client || clientKey !== key) { client = new Anthropic(key ? { apiKey: key } : {}); clientKey = key; }
+  return client;
+}
 
 const SYSTEM = `You are a senior local-SEO strategist and copywriter for Google Business Profiles.
 Rules you always follow:

@@ -214,6 +214,22 @@ CREATE TABLE IF NOT EXISTS activity_log (
   message TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS platform_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  is_secret INTEGER NOT NULL DEFAULT 0,
+  updated_by TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id TEXT PRIMARY KEY,
+  admin_user_id TEXT,
+  admin_email TEXT,
+  action TEXT NOT NULL,
+  target TEXT,
+  detail TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_posts_due ON posts(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_tenant ON credit_ledger(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_leads_loc ON lead_events(location_id, created_at);

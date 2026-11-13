@@ -10,6 +10,7 @@ import * as google from './services/google.js';
 import * as auto from './services/automation.js';
 import { recommendedDirectories, DIRECTORIES, napMatch } from './services/citations.js';
 import { createLink, recordLead, leadSummary } from './services/leads.js';
+import { admin } from './admin.js';
 
 export const api = express.Router();
 const loc = async (req) => await auto.getLocation(req.tenantId, req.params.id);
@@ -26,8 +27,8 @@ api.post('/auth/signup', async (req, res) => {
   if (!email || !password || password.length < 8) return res.status(400).json({ error: 'Email and password (8+ chars) required' });
   if (await q.get('SELECT id FROM users WHERE email = ?', email.toLowerCase())) return res.status(409).json({ error: 'Email already registered' });
   const tenantId = id('ten_'); const userId = id('usr_');
-  await q.run("INSERT INTO tenants (id, name, plan, plan_renews_at) VALUES (?,?, 'trial', datetime('now', '+14 days'))", tenantId, company || `${name || email}'s workspace`);
-  await q.run('INSERT INTO users (id, tenant_id, email, name, password_hash) VALUES (?,?,?,?,?)', userId, tenantId, email.toLowerCase(), name || null, hashPassword(password));
+  await q.run("INSERT INTO tenants (id, name, plan, plan_renews_at) VALUES (?,?, 'trial', datetime('now', ?))", tenantId, company || `${name || email}'s workspace`, `+${PLANS.trial.trialDays || 14} days`);
+  await q.run('INSERT INTO users (id, tenant_id, email, name, password_hash, is_platform_admin) VALUES (?,?,?,?,?,?)', userId, tenantId, email.toLowerCase(), name || null, hashPassword(password), config.adminEmails.includes(email.toLowerCase()) ? 1 : 0);
   await grant(tenantId, PLANS.trial.credits, 'trial_credits');
   res.json({ token: signJwt({ uid: userId }) });
 });
@@ -36,6 +37,7 @@ api.post('/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   const u = await q.get('SELECT * FROM users WHERE email = ?', String(email || '').toLowerCase());
   if (!u || !checkPassword(password || '', u.password_hash)) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!u.is_platform_admin && config.adminEmails.includes(u.email)) await q.run('UPDATE users SET is_platform_admin = 1 WHERE id = ?', u.id);
   res.json({ token: signJwt({ uid: u.id }) });
 });
 
@@ -62,9 +64,21 @@ api.all('/cron/tick', async (req, res) => {
 // ── Authenticated ───────────────────────────────────────────────────────────
 api.use(requireAuth);
 
+// Suspended / cancelled organizations can only see their account and pay.
+api.use(async (req, res, next) => {
+  if (req.user.is_platform_admin) return next();
+  const t = await q.get('SELECT plan_status FROM tenants WHERE id = ?', req.tenantId);
+  if (['suspended', 'cancelled'].includes(t?.plan_status) && !(req.path === '/me' || req.path.startsWith('/billing'))) {
+    return res.status(403).json({ error: `This account is ${t.plan_status}. Contact support or update billing to restore access.` });
+  }
+  next();
+});
+
+api.use('/admin', requirePlatformAdmin, admin);
+
 api.get('/me', async (req, res) => {
   const t = await q.get('SELECT * FROM tenants WHERE id = ?', req.tenantId);
-  res.json({ user: req.user, tenant: { ...t, plan_info: PLANS[t.plan] }, integrations: integrationStatus() });
+  res.json({ user: { ...req.user, impersonated_by: req.impersonatedBy || null }, tenant: { ...t, plan_info: PLANS[t.plan] }, integrations: integrationStatus() });
 });
 
 // Google connections
@@ -304,8 +318,8 @@ api.post('/billing/estimate', async (req, res) => {
   const workload = monthlyWorkload({ postsPerWeek: b.posts_per_week, reviewsPerMonth: b.reviews_per_month, keywords: b.keywords, gridSize: b.grid_size, scansPerMonth: b.scans_per_month, citationsPerMonth: b.citations_per_month });
   const perLoc = workload.total_credits; const locsN = Number(b.locations || 1);
   const need = perLoc * locsN;
-  const fit = Object.entries(PLANS).filter(([, p]) => p.priceMonthly && p.locations >= locsN)
-    .map(([k, p]) => { const extra = Math.max(0, need - p.credits); const packs = Math.ceil(extra / TOPUPS[1].credits); return { plan: k, name: p.name, monthly_total: p.priceMonthly + packs * TOPUPS[1].priceUsd, topups_needed: packs }; })
+  const fit = Object.entries(PLANS).filter(([, p]) => p.priceMonthly && !p.hidden && p.locations >= locsN)
+    .map(([k, p]) => { const extra = Math.max(0, need - p.credits); const packs = Math.ceil(extra / (TOPUPS[1] || TOPUPS[0]).credits); return { plan: k, name: p.name, monthly_total: p.priceMonthly + packs * (TOPUPS[1] || TOPUPS[0]).priceUsd, topups_needed: packs }; })
     .sort((a, b) => a.monthly_total - b.monthly_total);
   res.json({ workload, credits_needed: need, recommended: fit[0] || null, options: fit, roi: roiProjection({ planKey: fit[0]?.plan, avgLeadValue: Number(b.avg_lead_value || 150), closeRate: Number(b.close_rate || 0.3), baselineLeads: Number(b.baseline_leads || 20) * locsN }) });
 });

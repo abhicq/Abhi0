@@ -5,6 +5,9 @@ vendor cost of each API call or fulfilment task, then mapped to the ranking
 signal it moves. Single source of truth: `src/pricing.js` (`CREDIT_ACTIONS`,
 `PLANS`, `TOPUPS`). The Billing page and `GET /api/pricing` render the same data.
 
+> **Edit live in the admin panel** (Admin panel → Plans & pricing): plans, top-ups and
+> credits per action are stored in the database and override these defaults.
+>
 > Vendor costs are list-price estimates as of Nov 2026. Re-check DataForSEO,
 > Anthropic, Twilio and your citation fulfilment cost before launch and edit
 > `vendorCostUsd` — margins and plan-fit maths recompute automatically.
@@ -17,7 +20,7 @@ signal it moves. Single source of truth: `src/pricing.js` (`CREDIT_ACTIONS`,
 | Publish post to Google | 1 | ~$0.0005 | GBP API (free) + infra | ●●●○○ activity |
 | AI review reply | 2 | $0.006 | Claude Opus 5.5 | ●●●●○ response rate, trust |
 | AI profile optimization | 25 | $0.08 | Claude Opus 5.5 (medium effort) | ●●●●● relevance |
-| Keyword research (volume + CPC) | 15 | $0.075 | DataForSEO Keywords Data | ●●●●○ targeting |
+| Keyword research (volume + CPC) | 20 | $0.075 | DataForSEO Keywords Data | ●●●●○ targeting |
 | Geo-grid point | 1 | $0.0006 | DataForSEO Maps SERP (std queue; live ≈ $0.002) | ●●●○○ measurement |
 | Citation — standard | 200 | ~$0.55 | Fulfilment labour (~6 min) | ●●●○○ prominence, NAP |
 | Citation — premium/niche | 400 | ~$1.20 | Fulfilment + verification | ●●●●○ authority |
@@ -45,8 +48,8 @@ signal it moves. Single source of truth: `src/pricing.js` (`CREDIT_ACTIONS`,
 | Standard citations | 10 | 2,000 | 5.50 |
 | Profile optimization | 1 | 25 | 0.08 |
 | Competitor analysis | 1 | 12 | 0.03 |
-| Keyword research | 1 | 15 | 0.08 |
-| **Total** | | **3,121** | **$6.51** |
+| Keyword research | 1 | 20 | 0.08 |
+| **Total** | | **3,126** | **$6.51** |
 
 After the first ~3 months citations taper off, and a location in
 "maintenance mode" uses about 1,100 credits/month.

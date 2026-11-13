@@ -4,7 +4,13 @@ import { q } from './db.js';
 import { PLANS, TOPUPS } from './pricing.js';
 import { grant } from './credits.js';
 
-const stripe = config.stripe.enabled ? new Stripe(config.stripe.secretKey) : null;
+let stripeClient, stripeKey;
+/** Stripe client for the current key (admin panel or env); null when not configured. */
+export function getStripe() {
+  if (!config.stripe.enabled) return null;
+  if (stripeKey !== config.stripe.secretKey) { stripeClient = new Stripe(config.stripe.secretKey); stripeKey = config.stripe.secretKey; }
+  return stripeClient;
+}
 
 export async function activatePlan(tenantId, planKey, { subscriptionId = null, customerId = null } = {}) {
   const plan = PLANS[planKey];
@@ -17,7 +23,8 @@ export async function activatePlan(tenantId, planKey, { subscriptionId = null, c
 
 /** Returns a checkout URL (Stripe) or activates immediately in demo mode. */
 export async function checkout(tenant, { plan, topup, interval = 'month' }) {
-  if (plan && !PLANS[plan]?.priceMonthly) throw Object.assign(new Error('Unknown plan'), { status: 400 });
+  const stripe = getStripe();
+  if (plan && (!PLANS[plan]?.priceMonthly || PLANS[plan].hidden)) throw Object.assign(new Error('Unknown plan'), { status: 400 });
   const pack = topup && TOPUPS.find((t) => t.id === topup);
   if (topup && !pack) throw Object.assign(new Error('Unknown top-up'), { status: 400 });
   if (!stripe) {
@@ -40,6 +47,7 @@ export async function checkout(tenant, { plan, topup, interval = 'month' }) {
 }
 
 export async function handleWebhook(rawBody, signature) {
+  const stripe = getStripe();
   if (!stripe) throw Object.assign(new Error('Stripe not configured'), { status: 400 });
   const event = stripe.webhooks.constructEvent(rawBody, signature, config.stripe.webhookSecret);
   const o = event.data.object;

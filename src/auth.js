@@ -58,6 +58,7 @@ export async function requireAuth(req, res, next) {
   const user = await q.get('SELECT id, tenant_id, email, name, role, is_platform_admin FROM users WHERE id = ?', payload.uid);
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
   req.user = user;
+  req.impersonatedBy = payload.imp || null;
   req.tenantId = user.tenant_id;
   next();
 }
